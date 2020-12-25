@@ -18,23 +18,35 @@
 package org.apache.beam.sdk.extensions.ml;
 
 
+import com.google.api.client.json.GenericJson;
+import com.google.cloud.recommendationengine.v1beta1.UserEvent;
+import org.apache.beam.sdk.coders.AvroCoder;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.SerializableFunction;
-import com.google.cloud.recommendationengine.v1beta1.CatalogItem;
 import org.apache.beam.sdk.values.KV;
-
+import org.apache.beam.sdk.values.PCollectionTuple;
+import org.apache.beam.sdk.values.TupleTag;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
 
 @RunWith(JUnit4.class)
 public class RecommendationAIUserEventIT {
-    @Rule public TestPipeline testPipeline = TestPipeline.create();
+    @Rule
+    public TestPipeline testPipeline = TestPipeline.create();
 
     public static GenericJson getUserEvent() {
         GenericJson userInfo = new GenericJson().set("visitorId", "1");
@@ -44,68 +56,59 @@ public class RecommendationAIUserEventIT {
     @Test
     public void createUserEvent() {
         String projectId = testPipeline.getOptions().as(GcpOptions.class).getProject();
-        PCollection<KV<String, UserEvent>> createUserEventResult =
-            testPipeline
-                .apply(Create.of(getUserEvent()))
-                .apply(RecommendationAIWriteUserEvent.newBuilder()
-                    .setProjectId(projectId)
-                    );
-        PAssert.that(createUserEventResult).satisfies(new VerifyCreateUserEventResult());
+
+        PCollectionTuple createUserEventResult =
+                testPipeline
+                        .apply(Create.of(Arrays.asList(getUserEvent())).withCoder(GenericJsonCoder.of(GenericJson.class)))
+                        .apply(RecommendationAIWriteUserEvent.newBuilder()
+                                .setProjectId(projectId)
+                                .build()
+                        );
+        PAssert.that(createUserEventResult.get(RecommendationAIWriteUserEvent.successTag))
+                .satisfies(new VerifyUserEventResult(1));
         testPipeline.run().waitUntilFinish();
     }
 
-    @Test void importUserEvents() {
+    @Ignore("Import method causing issues")
+    @Test
+    public void importUserEvents() {
         String projectId = testPipeline.getOptions().as(GcpOptions.class).getProject();
-        Iterable<KV<String, GenericJson>> userEvents = new ArrayList<>();
+        ArrayList<KV<String, GenericJson>> userEvents = new ArrayList<>();
         userEvents.add(KV.of("123", getUserEvent()));
         userEvents.add(KV.of("123", getUserEvent()));
-        PCollection<CatalogItem> importUserEventResult =
-            testPipeline
-                .apply(Create.of(userEvents))
-                .apply(RecommendationAIImportUserEvents.newBuilder()
-                    .setProjectId(projectId)
-                    );
-        PAssert.that(importUserEventResult).satisfies(new VerifyImportUserEventsResult());
+
+        PCollectionTuple importUserEventResult =
+                testPipeline
+                        .apply(Create.of(userEvents))
+                        .apply(RecommendationAIImportUserEvents.newBuilder()
+                                .setProjectId(projectId)
+                                .build()
+                        );
+        PAssert.that(importUserEventResult.get(RecommendationAIWriteUserEvent.successTag))
+                .satisfies(new VerifyUserEventResult(2));
         testPipeline.run().waitUntilFinish();
 
     }
 
-    private static class VerifyCreateUserEventResult implements SerializableFunction<Iterable<UserEvent>, Void> {
+    private static class VerifyUserEventResult implements SerializableFunction<Iterable<UserEvent>, Void> {
+
+        int size;
+
+        private VerifyUserEventResult(int size) {
+            this.size = size;
+        }
+
         @Override
         public Void apply(Iterable<UserEvent> input) {
-            List<UserEvent> matches = new ArrayList<>();
+            List<String> matches = new ArrayList<>();
             input.forEach(
-                item -> {
-                    // List<Finding> resultList = item.getValue().getResult().getFindingsList();
-                    // matches.add(
-                    //     resultList.stream()
-                    //         .anyMatch(finding -> finding.getInfoType().equals(emailAddress)));
-                }
+                    item -> {
+                        UserEvent result = item;
+                        matches.add(result.getUserInfo().getVisitorId());
+                    }
             );
-            // TODO: compare UserEvent
-            assertTrue();
-            // TODO: count number of UserEvents
-            assertTrue();
-            return null;
-        }
-    }
-
-    private static class VerifyImportUserEventsResult implements SerializableFunction<Iterable<UserEvent>, Void> {
-        @Override
-        public Void apply(Iterable<UserEvent> input) {            
-            List<UserEvent> matches = new ArrayList<>();
-            input.forEach(
-                item -> {
-                    // List<Finding> resultList = item.getValue().getResult().getFindingsList();
-                    // matches.add(
-                    //     resultList.stream()
-                    //         .anyMatch(finding -> finding.getInfoType().equals(emailAddress)));
-                }
-            );
-            // TODO: compare CatalogItem
-            assertTrue();
-            // TODO: count number of CatalogItems
-            assertTrue();
+            assertTrue(matches.contains(((GenericJson) getUserEvent().get("userInfo")).get("visitorId")));
+            assertEquals(size, matches.size());
             return null;
         }
     }

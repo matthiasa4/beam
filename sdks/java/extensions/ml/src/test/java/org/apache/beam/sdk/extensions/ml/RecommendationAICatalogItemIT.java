@@ -17,24 +17,34 @@
  */
 package org.apache.beam.sdk.extensions.ml;
 
-import java.util.Random;
+import com.google.api.client.json.GenericJson;
+import com.google.cloud.recommendationengine.v1beta1.CatalogItem;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.SerializableFunction;
-import com.google.cloud.recommendationengine.v1beta1.CatalogItem;
 import org.apache.beam.sdk.values.KV;
-
+import org.apache.beam.sdk.values.PCollectionTuple;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
 
 @RunWith(JUnit4.class)
 public class RecommendationAICatalogItemIT {
-    @Rule public TestPipeline testPipeline = TestPipeline.create();
+    @Rule
+    public TestPipeline testPipeline = TestPipeline.create();
 
     private static GenericJson getCatalogItem() {
         List<Object> categories = new ArrayList<Object>();
@@ -48,64 +58,65 @@ public class RecommendationAICatalogItemIT {
     @Test
     public void createCatalogItem() {
         String projectId = testPipeline.getOptions().as(GcpOptions.class).getProject();
-        PCollection<KV<String, CatalogItem>> createCatalogItemResult =
-            testPipeline
-                .apply(Create.of(getCatalogItem()))
-                .apply(RecommendationAICreateCatalogItem.newBuilder()
-                    .setProjectId(projectId)
-                    );
-        PAssert.that(createCatalogItemResult).satisfies(new VerifyCreateCatalogItemResult());
+        GenericJson catalogItem = getCatalogItem();
+
+        PCollectionTuple createCatalogItemResult =
+                testPipeline
+                        .apply(Create.of(Arrays.asList(catalogItem)).withCoder(GenericJsonCoder.of(GenericJson.class)))
+                        .apply(RecommendationAICreateCatalogItem.newBuilder()
+                                .setProjectId(projectId)
+                                .build()
+                        );
+        PAssert.that(createCatalogItemResult.get(RecommendationAICreateCatalogItem.successTag))
+                .satisfies(new VerifyCatalogItemResult(1, (String) catalogItem.get("id")));
         testPipeline.run().waitUntilFinish();
     }
 
     @Ignore("Import method causing issues")
-    @Test void importCatalogItems() {
+    @Test
+    public void importCatalogItems() {
         String projectId = testPipeline.getOptions().as(GcpOptions.class).getProject();
-        Iterable<KV<String, GenericJson>> catalogItems = new ArrayList<>();
-        catalogItems.add(KV.of(Integer.toString(new Random().nextInt()), getCatalogItem()));
-        catalogItems.add(KV.of(Integer.toString(new Random().nextInt()), getCatalogItem()));
-        PCollection<CatalogItem> importCatalogItemResult =
-            testPipeline
-                .apply(Create.of(catalogItems))
-                .apply(RecommendationAIImportCatalogItems.newBuilder()
-                    .setProjectId(projectId)
-                    );
-        PAssert.that(importCatalogItemResult).satisfies(new VerifyImportCatalogItemsResult());
+        ArrayList<KV<String, GenericJson>> catalogItems = new ArrayList<>();
+
+        GenericJson catalogItem1 = getCatalogItem();
+        GenericJson catalogItem2 = getCatalogItem();
+
+        catalogItems.add(KV.of(Integer.toString(new Random().nextInt()), catalogItem1));
+        catalogItems.add(KV.of(Integer.toString(new Random().nextInt()), catalogItem2));
+
+        PCollectionTuple importCatalogItemResult =
+                testPipeline
+                        .apply(Create.of(catalogItems))
+                        .apply(RecommendationAIImportCatalogItems.newBuilder()
+                                .setProjectId(projectId)
+                                .build()
+                        );
+        PAssert.that(importCatalogItemResult.get(RecommendationAIImportCatalogItems.successTag))
+                .satisfies(new VerifyCatalogItemResult(2, (String) catalogItem1.get("id")));
         testPipeline.run().waitUntilFinish();
     }
 
-    private static class VerifyCreateCatalogItemResult implements SerializableFunction<Iterable<CatalogItem>, Void> {
+    private static class VerifyCatalogItemResult implements SerializableFunction<Iterable<CatalogItem>, Void> {
+
+        String catalogItemId;
+        int size;
+
+        private VerifyCatalogItemResult(int size, String catalogItemId) {
+            this.size = size;
+            this.catalogItemId = catalogItemId;
+        }
+
         @Override
         public Void apply(Iterable<CatalogItem> input) {
-            List<CatalogItem> matches = new ArrayList<>();
+            List<String> matches = new ArrayList<>();
             input.forEach(
-                item -> {
-                    CatalogItem result = item.getId();
-                    matches.add(result);
-                }
+                    item -> {
+                        CatalogItem result = item;
+                        matches.add(result.getId());
+                    }
             );
-            assertTrue(matches.contains((String) getCatalogItem().getValueMap().get("id")));
-            assertEquals(1, matches.size());
-            return null;
-        }
-    }
-
-    private static class VerifyImportCatalogItemsResult implements SerializableFunction<Iterable<CatalogItem>, Void> {
-        @Override
-        public Void apply(Iterable<CatalogItem> input) {            
-            List<CatalogItem> matches = new ArrayList<>();
-            input.forEach(
-                item -> {
-                    // List<Finding> resultList = item.getValue().getResult().getFindingsList();
-                    // matches.add(
-                    //     resultList.stream()
-                    //         .anyMatch(finding -> finding.getInfoType().equals(emailAddress)));
-                }
-            );
-            // TODO: compare CatalogItem
-            assertTrue();
-            // TODO: count number of CatalogItems
-            assertTrue();
+            assertTrue(matches.contains(this.catalogItemId));
+            assertEquals(size, matches.size());
             return null;
         }
     }

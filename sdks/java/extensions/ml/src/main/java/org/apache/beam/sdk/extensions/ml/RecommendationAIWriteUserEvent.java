@@ -17,19 +17,12 @@
  */
 package org.apache.beam.sdk.extensions.ml;
 
-import java.io.IOException;
-import javax.annotation.Nullable;
-import org.json.JSONObject;
-import com.google.protobuf.util.JsonFormat;
-
-import com.google.auto.value.AutoValue;
 import com.google.api.client.json.GenericJson;
-import com.google.cloud.recommendationengine.v1beta1.UserEventServiceClient;
+import com.google.auto.value.AutoValue;
 import com.google.cloud.recommendationengine.v1beta1.EventStoreName;
 import com.google.cloud.recommendationengine.v1beta1.UserEvent;
-import com.google.cloud.recommendationengine.v1beta1.InputConfig;
-import org.apache.beam.sdk.transforms.PTransform;
-import com.google.api.client.json.GenericJson;
+import com.google.cloud.recommendationengine.v1beta1.UserEventServiceClient;
+import com.google.protobuf.util.JsonFormat;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
@@ -37,6 +30,11 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.json.JSONObject;
+
+import javax.annotation.Nullable;
+import java.io.IOException;
+
 /**
  * A {@link PTransform} using the Recommendations AI API (https://cloud.google.com/recommendations). Takes an input
  * {@link PCollection} of {@link GenericJson}s and converts them to and creates
@@ -44,96 +42,108 @@ import org.apache.beam.sdk.values.TupleTagList;
  *
  * <p>
  * It is possible to provide a catalog name to which you want to add the user
- * event (defaults to "default_catalog"). 
+ * event (defaults to "default_catalog").
  * It is possible to provide a event store to which you want to add the user
- * event (defaults to "default_event_store"). 
+ * event (defaults to "default_event_store").
  */
+@AutoValue
+@SuppressWarnings({
+        "nullness"
+})
 public abstract class RecommendationAIWriteUserEvent extends PTransform<PCollection<GenericJson>, PCollectionTuple> {
-    
-    /** @return ID of Google Cloud project to be used for creating user events. */
+
+    public static final TupleTag<UserEvent> successTag = new TupleTag<UserEvent>() {
+    };
+    public static final TupleTag<UserEvent> failureTag = new TupleTag<UserEvent>() {
+    };
+
+    public static Builder newBuilder() {
+        return new AutoValue_RecommendationAIWriteUserEvent.Builder()
+                .setCatalogName("default_catalog")
+                .setEventStore("default_event_store");
+    }
+
+    /**
+     * @return ID of Google Cloud project to be used for creating user events.
+     */
     public abstract String projectId();
 
-    /** @return Name of the catalog where the user events will be created. */
-    public abstract @Nullable String catalogName();
-    
-    /** @return Name of the event store where the user events will be created. */
-    public abstract @Nullable String eventStore();
+    /**
+     * @return Name of the catalog where the user events will be created.
+     */
+    public abstract @Nullable
+    String catalogName();
 
-    public abstract TupleTag<UserEvent> successTag();
+    /**
+     * @return Name of the event store where the user events will be created.
+     */
+    public abstract @Nullable
+    String eventStore();
 
-    public abstract TupleTag<UserEvent> failureTag();
+    /**
+     * The transform converts the contents of input PCollection into {@link UserEvent}s and then calls
+     * the Recommendation AI service to create the user event.
+     *
+     * @param input input PCollection
+     * @return PCollectionTuple with successful and failed {@link UserEvent}s
+     */
+
+    @Override
+    public PCollectionTuple expand(PCollection<GenericJson> input) {
+        return input.apply(ParDo
+                .of(new WriteUserEvent(projectId(), catalogName(), eventStore()))
+                .withOutputTags(successTag, TupleTagList.of(failureTag)));
+    }
 
     @AutoValue.Builder
     public abstract static class Builder {
-        /** @param projectId ID of Google Cloud project to be used for creating user events. */
+        /**
+         * @param projectId ID of Google Cloud project to be used for creating user events.
+         */
         public abstract Builder setProjectId(String projectId);
-        
-        /** @param catalogName Name of the catalog where the user events will be created. */
+
+        /**
+         * @param catalogName Name of the catalog where the user events will be created.
+         */
         public abstract Builder setCatalogName(@Nullable String catalogName);
 
-        /** @param eventStore Name of the event store where the user events will be created. */
+        /**
+         * @param eventStore Name of the event store where the user events will be created.
+         */
         public abstract Builder setEventStore(@Nullable String eventStore);
-
-        public abstract Builder setSuccessTag(TupleTag<UserEvent> successTag);
-
-        public abstract Builder setFailureTag(TupleTag<UserEvent> failureTag);
 
         public abstract RecommendationAIWriteUserEvent build();
     }
 
-    public static Builder newBuilder() {
-        return new AutoValue_RecommendationAIWriteUserEvent.Builder().setCatalogName("default_catalog").setEventStore("default_event_store");
-    }
-
-  /**
-   * The transform converts the contents of input PCollection into {@link UserEvent}s and then calls
-   * the Recommendation AI service to create the user event.
-   *
-   * @param input input PCollection
-   * @return PCollectionTuple with successful and failed {@link UserEvent}s
-   */
-
-    @Override
-    public PCollectionTuple expand(PCollection<GenericJson> input) {
-        return input.apply(ParDo.of(new WriteUserEvent(catalogName(), eventStore(), successTag(), failureTag())).withOutputTags(successTag(), TupleTagList.of(failureTag())));
-    }
-
-    private static class WriteUserEvent extends DoFn<GenericJson, PCollectionTuple> {
+    private static class WriteUserEvent extends DoFn<GenericJson, UserEvent> {
         private final String projectId;
         private final String catalogName;
         private final String eventStore;
-        private final TupleTag<UserEvent> successTag;
-        private final TupleTag<UserEvent> failureTag;
 
         /**
-         * @param projectId ID of GCP project to be used for creating user events.
+         * @param projectId   ID of GCP project to be used for creating user events.
          * @param catalogName Catalog name for UserEvent creation.
-         * @param eventStore Event store for UserEvent creation.
-         * @param successTag TupleTag for successfully created items.
-         * @param failureTag TupleTag for failed items.
+         * @param eventStore  Event store for UserEvent creation.
          */
-        private WriteUserEvent(String projectId, String catalogName, String eventStore, TupleTag<UserEvent> successTag,
-        TupleTag<UserEvent> failureTag) {
+        private WriteUserEvent(String projectId, String catalogName, String eventStore) {
             this.projectId = projectId;
             this.catalogName = catalogName;
             this.eventStore = eventStore;
-            this.successTag = successTag;
-            this.failureTag = failureTag;
         }
 
         @ProcessElement
         public void ProcessElement(ProcessContext context) throws IOException {
             EventStoreName parent = EventStoreName.of(projectId, "global", catalogName, eventStore);
             UserEvent.Builder userEventBuilder = UserEvent.newBuilder();
-            UserEvent userEvent = JsonFormat.parser().merge((new JSONObject(context.element)).toString(), userEventBuilder);
+            JsonFormat.parser().merge((new JSONObject(context.element())).toString(), userEventBuilder);
+            UserEvent userEvent = userEventBuilder.build();
 
             try (UserEventServiceClient userEventServiceClient = UserEventServiceClient.create()) {
                 UserEvent response = userEventServiceClient.writeUserEvent(parent, userEvent);
 
                 context.output(successTag, response);
-            }
-            catch (Exception e) {
-                context.output(failureTag, user);
+            } catch (Exception e) {
+                context.output(failureTag, userEvent);
             }
         }
 

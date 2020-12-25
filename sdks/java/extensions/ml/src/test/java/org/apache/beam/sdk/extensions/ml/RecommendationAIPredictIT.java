@@ -18,23 +18,32 @@
 package org.apache.beam.sdk.extensions.ml;
 
 
+import com.google.api.client.json.GenericJson;
+import com.google.cloud.recommendationengine.v1beta1.PredictResponse;
+import com.google.cloud.recommendationengine.v1beta1.UserEvent;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.SerializableFunction;
-import com.google.cloud.recommendationengine.v1beta1.CatalogItem;
-import org.apache.beam.sdk.values.KV;
-
+import org.apache.beam.sdk.values.PCollectionTuple;
+import org.apache.beam.sdk.values.TupleTag;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.Assert.assertTrue;
+
 
 @RunWith(JUnit4.class)
 public class RecommendationAIPredictIT {
-    @Rule public TestPipeline testPipeline = TestPipeline.create();
+    @Rule
+    public TestPipeline testPipeline = TestPipeline.create();
 
     public static GenericJson getUserEvent() {
         GenericJson userInfo = new GenericJson().set("visitorId", "1");
@@ -44,31 +53,31 @@ public class RecommendationAIPredictIT {
     @Test
     public void predict() {
         String projectId = testPipeline.getOptions().as(GcpOptions.class).getProject();
-        PCollection<KV<String, PredictResponse.PredictionResult>> predictResult =
-            testPipeline
-                .apply(Create.of(getUserEvent()))
-                .apply(RecommendationAIPredict.newBuilder()
-                    .setProjectId(projectId)
-                    .setPlacementId("recently_viewed_default")
-                    );
-        PAssert.that(predictResult).satisfies(new VerifyPredictResult());
+
+        PCollectionTuple predictResult =
+                testPipeline
+                        .apply(Create.of(Arrays.asList(getUserEvent())).withCoder(GenericJsonCoder.of(GenericJson.class)))
+                        .apply(RecommendationAIPredict.newBuilder()
+                                .setProjectId(projectId)
+                                .setPlacementId("recently_viewed_default")
+                                .build()
+                        );
+        PAssert.that(predictResult.get(RecommendationAIPredict.successTag)).satisfies(new VerifyPredictResult());
         testPipeline.run().waitUntilFinish();
     }
 
-    private static class VerifyPredictResult implements SerializableFunction<Iterable<UserEvent>, Void> {
+    private static class VerifyPredictResult implements SerializableFunction<Iterable<PredictResponse.PredictionResult>, Void> {
+
         @Override
         public Void apply(Iterable<PredictResponse.PredictionResult> input) {
             List<PredictResponse.PredictionResult> matches = new ArrayList<>();
             input.forEach(
-                item -> {
-                    // List<Finding> resultList = item.getValue().getResult().getFindingsList();
-                    // matches.add(
-                    //     resultList.stream()
-                    //         .anyMatch(finding -> finding.getInfoType().equals(emailAddress)));
-                }
+                    item -> {
+                        PredictResponse.PredictionResult result = item;
+                        matches.add(result);
+                    }
             );
-            // TODO: compare UserEvent
-            assertTrue();
+            assertTrue(!matches.isEmpty());
             return null;
         }
     }

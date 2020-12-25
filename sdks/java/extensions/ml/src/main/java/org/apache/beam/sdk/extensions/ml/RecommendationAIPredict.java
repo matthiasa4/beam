@@ -41,7 +41,7 @@ import org.apache.beam.sdk.values.TupleTagList;
 /**
  * A {@link PTransform} using the Recommendations AI API (https://cloud.google.com/recommendations). Takes an input
  * {@link PCollection} of {@link GenericJson}s and creates
- * {@link PredictResponse}s.
+ * {@link PredictResponse.PredictionResult}s.
  *
  * <p>
  * It is possible to provide a catalog name to which you want to add the user
@@ -50,6 +50,10 @@ import org.apache.beam.sdk.values.TupleTagList;
  * event (defaults to "default_event_store"). 
  * A placement id for the recommendation engine placement to be used.
  */
+@AutoValue
+@SuppressWarnings({
+        "nullness"
+})
 public abstract class RecommendationAIPredict extends PTransform<PCollection<GenericJson>, PCollectionTuple> {
     
     /** @return ID of Google Cloud project to be used for creating catalog items. */
@@ -64,9 +68,10 @@ public abstract class RecommendationAIPredict extends PTransform<PCollection<Gen
     /** @return ID of the recommendation engine placement. */
     public abstract String placementId();
 
-    public abstract TupleTag<UserEvent> successTag();
+    public static final TupleTag<PredictResponse.PredictionResult> successTag =
+            new TupleTag<PredictResponse.PredictionResult>() {};
 
-    public abstract TupleTag<UserEvent> failureTag();
+    public static final TupleTag<UserEvent> failureTag = new TupleTag<UserEvent>() {};
 
     @AutoValue.Builder
     public abstract static class Builder {
@@ -79,60 +84,52 @@ public abstract class RecommendationAIPredict extends PTransform<PCollection<Gen
         /** @param eventStore Name of the event store where the user events will be created. */
         public abstract Builder setEventStore(@Nullable String eventStore);
 
-        /** @param eventStore ID of the recommendation engine placement. */
+        /** @param placementId of the recommendation engine placement. */
         public abstract Builder setPlacementId(String placementId);
-
-        public abstract Builder setSuccessTag(TupleTag<PredictResponse.PredictionResult> successTag);
-
-        public abstract Builder setFailureTag(TupleTag<UserEvent> failureTag);
 
         public abstract RecommendationAIPredict build();
     }
 
     public static Builder newBuilder() {
-        return new AutoValue_RecommendationAIPredict.Builder().setCatalogName("default_catalog").setEventStore("default_event_store");
+        return new AutoValue_RecommendationAIPredict.Builder()
+                .setCatalogName("default_catalog")
+                .setEventStore("default_event_store");
     }
 
     @Override
     public PCollectionTuple expand(PCollection<GenericJson> input) {
-        return input.apply(ParDo.of(new Predict(catalogName(), eventStore(), placementId(), successTag(), failureTag())).withOutputTags(successTag(), TupleTagList.of(failureTag())));
+        return input.apply(ParDo.of(new Predict(projectId(), catalogName(), eventStore(), placementId()))
+                .withOutputTags(successTag, TupleTagList.of(failureTag)));
     }
 
-    private static class Predict extends DoFn<GenericJson, PCollectionTuple> {
+    private static class Predict extends DoFn<GenericJson, PredictResponse.PredictionResult> {
         private final String projectId;
         private final String catalogName;
         private final String eventStore;
         private final String placementId;
-        private final TupleTag<UserEvent> successTag;
-        private final TupleTag<UserEvent> failureTag;
 
         /**
          * @param projectId ID of GCP project to be used for creating catalog items.
          * @param catalogName Catalog name for UserEvent creation.
          * @param eventStore Event store for UserEvent creation.
          * @param placementId ID of the recommendation engine placement.
-         * @param successTag TupleTag for successfully created items.
-         * @param failureTag TupleTag for failed items.
          */
-        private Predict(String projectId, String catalogName, String eventStore, String placementId, TupleTag<UserEvent> successTag,
-        TupleTag<UserEvent> failureTag) {
+        private Predict(String projectId, String catalogName, String eventStore, String placementId) {
             this.projectId = projectId;
             this.catalogName = catalogName;
             this.eventStore = eventStore;
             this.placementId = placementId;
-            this.successTag = successTag;
-            this.failureTag = failureTag;
         }
 
         @ProcessElement
         public void ProcessElement(ProcessContext context) throws IOException {
             PlacementName name = PlacementName.of(projectId, "global", catalogName, eventStore, placementId);
             UserEvent.Builder userEventBuilder = UserEvent.newBuilder();
-            UserEvent userEvent = JsonFormat.parser().merge((new JSONObject(context.element)).toString(), userEventBuilder);
+            JsonFormat.parser().merge((new JSONObject(context.element())).toString(), userEventBuilder);
+            UserEvent userEvent = userEventBuilder.build();
             try (PredictionServiceClient predictionServiceClient = PredictionServiceClient.create()) {
-                // TODO: check what to output
-                for (PredictResponse.PredictionResult element : predictionServiceClient.predict(name, userEvent).iterateAll()) {
-                    context.output(successTag, element);
+                for (PredictResponse.PredictionResult res : predictionServiceClient.predict(name, userEvent).iterateAll()) {
+                    context.output(successTag, res);
                 }
             }
             catch (Exception e) {
